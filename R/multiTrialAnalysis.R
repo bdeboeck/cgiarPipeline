@@ -24,6 +24,7 @@ metLMM <- function(
   if(modelType %in% c("gblup","ssgblup","rrblup") & is.null(phenoDTfile$data$geno)){
     stop("Please include marker information in your data structure to fit this model type.", call. = FALSE)
   }
+  # if user will use markers read them and apply the modifications in the table
   if(modelType %in% c("gblup","ssgblup","rrblup") & !is.null(phenoDTfile$data$geno)){
     Markers <- phenoDTfile$data$geno
     if(is.null(analysisIdForGenoModifications)){ # user didn't provide a modifications id
@@ -40,9 +41,8 @@ metLMM <- function(
     }
     Markers <- Markers[,sample(1:min(c(ncol(Markers), nMarkersRRBLUP)))] # don't use all the markers if goes beyond 1K
   }
-  if(is.null(phenoDTfile$metadata$weather)){
-    provMet <- as.data.frame(matrix(nrow=0, ncol=3))
-    colnames(provMet) <- c("environment", "parameter" ,  "value")
+  if(is.null(phenoDTfile$metadata$weather)){ # avoid an error when there is no weather information
+    provMet <- as.data.frame(matrix(nrow=0, ncol=3));  colnames(provMet) <- c("environment", "parameter" ,  "value")
     phenoDTfile$metadata$weather <- provMet
   }
   names(traitFamily) <- trait
@@ -50,28 +50,31 @@ metLMM <- function(
   heritUB <- rep(heritUB,length(trait))
   traitOrig <- trait
   common <- intersect(fixedTerm,randomTerm)
-  fixedTerm <- setdiff(fixedTerm,common)
-  if(length(fixedTerm) == 0 | is.null(fixedTerm)){fixedTerm <- "1"}
+  fixedTerm <- setdiff(fixedTerm,common) # make sure fixed and random effects don't overlap
+  if(length(fixedTerm) == 0 | is.null(fixedTerm)){fixedTerm <- "1"} # assign the intercept if there's no fixed effects
   # print(fixedTerm)
   if("designation" %in% randomTerm){returnFixedGeno=FALSE}else{interactionsWithGeno <- NULL; returnFixedGeno<- TRUE} # don't allow interactions if genotype is not random from start
-  if(!"designation" %in% randomTerm){modelType <- "blue"}
-   ############################
+  if(!"designation" %in% randomTerm){modelType <- "blue"} # assign blue method if the user provided designation in the fixed part
+  ############################
   # loading the dataset
   mydata <- phenoDTfile$predictions #
   if (nrow(mydata) < 2) stop("Not enough data is available to perform a multi trial analysis. Please perform an STA before trying to do an MET.", call. = FALSE)
   mydata <- mydata[which(mydata$analysisId %in% analysisId),]
+  # add the other available columns to the dataset
+  metaPheno <- phenoDTfile$metadata$pheno[which(phenoDTfile$metadata$pheno$parameter %in% c("environment","year","season","country","location","trial")),]
+  otherMetaCols <- unique(phenoDTfile$data$pheno[,metaPheno$value])
+  colnames(otherMetaCols) <- cgiarBase::replaceValues(Source = colnames(otherMetaCols), Search = metaPheno$value, Replace = metaPheno$parameter )
+  otherMetaCols <- otherMetaCols[which(!duplicated(otherMetaCols[,"environment"])),] # we do this in case the users didn't define the environment properly
+  mydata <- merge(mydata, otherMetaCols, by="environment", all.x = TRUE)
+  # some checks after filtering
   if(nrow(mydata)==0){stop("No match for this analysisId. Please correct.", call. = FALSE)}
   if( length(setdiff(setdiff(fixedTerm,"1"),colnames(mydata))) > 0 ){stop(paste("column(s):", paste(setdiff(setdiff(fixedTerm,"1"),colnames(mydata)), collapse = ","),"couldn't be found."), call. = FALSE)}
   if( length(setdiff(setdiff(randomTerm,"1"),colnames(mydata))) > 0 ){stop(paste("column(s):", paste(setdiff(setdiff(randomTerm,"1"),colnames(mydata)), collapse = ","),"couldn't be found."), call. = FALSE)}
-  
   # loading the metrics
   metrics <- phenoDTfile$metrics
   metrics <- metrics[which(metrics$analysisId %in% analysisId),]
-  # loading marker modifications
-  # if(analysisIdForGenoModifications == ""){analysisIdForGenoModifications <- NULL}
-
   #############################
-  # loading the additional matrix needed depending on the model
+  # defining the name of the surrogate depending on the model
   if(modelType == "blup"){
     surrogate <- "TGV"
   }else if(modelType == "pblup"){
@@ -81,14 +84,14 @@ metLMM <- function(
   }else if(modelType == "ssgblup"){
     surrogate <- "ssGEBV"
   }else{surrogate <- "PV"}
-  # if user didn't provide a table for which environments should be included make it
+  # if user didn't provide a table for which environments should be included, make it! include all environments as default
   if(is.null(envsToInclude)){
     envsToInclude=  as.data.frame( do.call( rbind, list (with(mydata, table(environment,trait)) ) ) )
     bad <- which(envsToInclude <= 1, arr.ind = TRUE)
     if(nrow(bad) > 0){envsToInclude[bad] = 0}
     envsToInclude[which(envsToInclude > 1, arr.ind = TRUE)] = 1
   }
-  # check if traits specified are actualy available and remove the ones that are not present
+  # check if traits specified are actually available and remove the ones that are not present
   utraits <- unique(mydata$trait)
   traitToRemove <- character()
   for(k in 1:length(trait)){
@@ -98,6 +101,7 @@ metLMM <- function(
     }
   }
   trait <- setdiff(trait,traitToRemove)
+  if(length(trait)==0){stop("None of the traits specified are available. Please double check", call. = FALSE)}
   traitToRemove <- character()
   if(!is.null(envsToInclude)){
     for(k in 1:length(trait)){
@@ -111,12 +115,8 @@ metLMM <- function(
   if(length(trait)==0){stop("None of the traits specified are available. Please double check", call. = FALSE)}
   heritLB <- heritLB[which(traitOrig %in% trait)]
   heritUB <- heritUB[which(traitOrig %in% trait)]
-  ############################
-  # remove outliers from each environment
-  mydata$rowindex <- 1:nrow(mydata)
   ##############################
   ## met analysis
-  # print(randomTerm)
   predictionsList <- list(); counter=counter2=1
   traitToRemove <- character()
   for(iTrait in trait){ # # iTrait = trait[1]  iTrait="value"
@@ -139,9 +139,9 @@ metLMM <- function(
       print(paste("There was no predictions to work with in trait",iTrait,". Please look at your H2 boundaries. You may be discarding all envs."))
       traitToRemove <- c(traitToRemove,iTrait)
     }else{
-      mydataSub$designation <- as.factor(mydataSub$designation) # move to factor
-      mydataSub$environment <- as.factor(mydataSub$environment) # move to factor
-      mydataSub$pipeline <- as.factor(mydataSub$pipeline) # move to factor
+      for(iTerm in unique(c(fixedTerm, randomTerm))){
+        mydataSub[,iTerm] <- as.factor(mydataSub[,iTerm]) # move to factor
+      }
       mydataSub <- mydataSub[which(mydataSub$designation != ""),] # remove blank designations
       ## build the environmental index
       ei <- aggregate(predictedValue~environment, data=mydataSub,FUN=mean, na.rm=TRUE); colnames(ei)[2] <- "envIndex0"
@@ -153,7 +153,7 @@ metLMM <- function(
       phenoDTfile$metadata$weather <- rbind(phenoDTfile$metadata$weather,ei[,colnames(phenoDTfile$metadata$weather)])
       toKeep <- rownames(unique(phenoDTfile$metadata$weather[,c("environment","parameter")])) # only keep unique records using rownames (alternatively we could use which(!duplicated()))
       phenoDTfile$metadata$weather <- phenoDTfile$metadata$weather[toKeep,]
-      ## add metadata from environment(weather)
+      ## add metadata from environment(e.g., weather) as new columns of the phenotype dataset in case the user wants to model it
       if(!is.null(phenoDTfile$metadata$weather)){
         metas <- phenoDTfile$metadata$weather;
         metas <- reshape(metas, direction = "wide", idvar = "environment",
@@ -365,12 +365,13 @@ metLMM <- function(
             silent = TRUE
           )
           myGinverse <- NULL      # mix
-          currentModeling <- data.frame(module="mta", analysisId=mtaAnalysisId,trait=iTrait, environment="across",
-                                        parameter=c("fixedFormula","randomFormula","family","designationEffectType"), 
-                                        value=c(fix,ifelse(returnFixedGeno,NA,ranran),traitFamily[iTrait],ifelse(returnFixedGeno,"BLUE","BLUP")))
-          phenoDTfile$modeling <- rbind(phenoDTfile$modeling,currentModeling[,colnames(phenoDTfile$modeling)] )
+         
           # print(mix$VarDf)
           if(!inherits(mix,"try-error") ){ # if random model runs well try the fixed model
+            currentModeling <- data.frame(module="mta", analysisId=mtaAnalysisId,trait=iTrait, environment="across",
+                                          parameter=c("fixedFormula","randomFormula","family","designationEffectType"), 
+                                          value=c(fix,ifelse(returnFixedGeno,NA,ranran),traitFamily[iTrait], toupper(modelType) ))
+            phenoDTfile$modeling <- rbind(phenoDTfile$modeling,currentModeling[,colnames(phenoDTfile$modeling)] )
             if(is.null(phenoDTfile$metadata$weather)){numericMetas <- character()}
             for(iIndex in c(numericMetas,"envIndex")){
               if( (iIndex %in% interactionsWithGenoTrait) ){names(mix$ndxCoefficients[[paste0("designation:",iIndex)]]) <- names(mix$ndxCoefficients$designation) } # copy same names than main designation effect
@@ -506,12 +507,13 @@ metLMM <- function(
                 start <- sum(dims[1:(which(dims$Term == iGenoUnit) - 1),"Model"]) # we don't add a one because we need the intercept
                 pev <- as.matrix(solve(mix$C))[start:(start+length(predictedValue)-1),start:(start+length(predictedValue)-1)]
                 stdError <- (sqrt(diag(pev)))
+                designation <- gsub("designation_","", names(predictedValue))
               }else{ # user wants random effect predictions for genotype (main effect)
                 predictedValue <- genEva$designation$predictedValue
                 stdError <- genEva$designation$stdError
                 pev <- genEva$designation$pev
+                designation <- gsub("designation","", names(predictedValue))
               }
-              designation <- gsub("designation","", names(predictedValue))
               pp <- data.frame(designation,predictedValue,stdError)
               ss = mix$VarDf; rownames(ss) <- ss$VarComp
               Vg <- ss["designation",2]; Vr <- ss["residual",2]
@@ -552,11 +554,12 @@ metLMM <- function(
                         dims <- mix$EDdf
                         start <- sum(dims[1:(which(dims$Term == iGenoUnit) - 1),"Model"]) # we don't add a one because we need the intercept
                         stdError <- (sqrt(diag(as.matrix(solve(mix$C)))))[start:(start+length(predictedValue)-1)]
+                        designation <- gsub("designation_","", names(predictedValue))
                       }else{ # user wants random effect predictions for genotype:envIndex
                         predictedValue <- genEva[[iGenoUnit]]$predictedValue #+ mix$coefficients$`(Intercept)`
                         stdError <- genEva[[iGenoUnit]]$stdError
+                        designation <- gsub("designation","", names(predictedValue))
                       }
-                      designation <- gsub("designation","", names(predictedValue))
                       pp2 <- data.frame(designation,predictedValue,stdError)
                       Vg <- ss[iGenoUnit,2];
                       if(iGenoUnit %in% fixedTermTrait){pp$reliability <- 1e-6}else{pp2$reliability <- genEva[[iGenoUnit]]$R2}
