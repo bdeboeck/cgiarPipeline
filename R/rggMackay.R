@@ -1,4 +1,4 @@
-rgg <- function(
+rggMackay <- function(
     phenoDTfile= NULL,
     analysisId=NULL,
     trait=NULL, # per trait
@@ -7,7 +7,8 @@ rgg <- function(
     partition=FALSE,
     yearsToUse=NULL,
     entryTypeToUse=NULL,
-    verbose=TRUE
+    verbose=TRUE,
+    forceRules=TRUE
 ){
   ## THIS FUNCTION CALCULATES THE REALIZED GENETIC GAIN FOR SOME TRAITS
   ## IS USED IN THE BANAL APP UNDER THE METRICS MODULES
@@ -17,23 +18,16 @@ rgg <- function(
   if(is.null(phenoDTfile)){stop("Please provide the name of the analysis to locate the predictions", call. = FALSE)}
   if(is.null(analysisId)){stop("Please provide the ID of the analysis to use as input", call. = FALSE)}
   if(is.null(trait)){stop("Please provide traits to be analyzed", call. = FALSE)}
-  # phenoDTfile$data$pedigree <- unique(phenoDTfile$predictions[,c(gTerm,"mother","father")])
-  # phenoDTfile$data$pedigree$yearOfOrigin <- sample(2000:2023, nrow(phenoDTfile$data$pedigree), replace = TRUE)
   ############################
   # loading the dataset
   mydata <- phenoDTfile$predictions
   mydata <- mydata[which(mydata$analysisId %in% analysisId),]
   if(nrow(mydata)==0){stop("No match for this analysisId. Please correct.", call. = FALSE)}
-  # paramsPheno <- phenoDTfile$metadata$pheno
-  # paramsPheno <- paramsPheno[which(paramsPheno$parameter != "trait"),]
-  # colnames(mydata) <- cgiarBase::replaceValues(colnames(mydata), Search = paramsPheno$value, Replace = paramsPheno$parameter )
-  
+  # add male, female and yearOfOrigin columns
   myPed <- phenoDTfile$data$pedigree
   paramsPed <- phenoDTfile$metadata$pedigree
   colnames(myPed) <- cgiarBase::replaceValues(colnames(myPed), Search = paramsPed$value, Replace = paramsPed$parameter )
   myPed <- unique(myPed[,c(gTerm,fixedTerm)])
-  
-  
   if(is.null(myPed) || (nrow(myPed) == 0 ) ){stop("yearOfOrigin column was not matched in your original file. Please correct.", call. = FALSE)}
   mydata <- merge(mydata, myPed[,c(gTerm,fixedTerm)], by=gTerm, all.x=TRUE )
   mydata <- mydata[which(!is.na(mydata$yearOfOrigin)),]
@@ -46,7 +40,11 @@ rgg <- function(
     mydata <- mydata[which(mydata$entryType %in% entryTypeToUse),]
   }
   if(nrow(mydata) == 0){stop("No data to work with with the specified parameters. You may want to check the yearsToUse parameter. Maybe you have not mapped the 'yearOfOrigin' column in the Data Retrieval tad under the 'Pedigree' section.",call. = FALSE)}
-  if(length(unique(na.omit(mydata[,fixedTerm]))) <= 1){stop("Only one year of data. Realized genetic gain analysis cannot proceed.Maybe you have not mapped the 'yearOfOrigin' column in the Data Retrieval tad under the 'Pedigree' section. ", call. = FALSE)}
+  if(forceRules){ # if we wnforce ABI rules for minimum years of data
+    if(length(unique(na.omit(mydata[,fixedTerm]))) <= 5){stop("Less than 5 years of data have been detected. Realized genetic gain analysis cannot proceed.Maybe you have not mapped the 'yearOfOrigin' column in the Data Retrieval tad under the 'Pedigree' section. ", call. = FALSE)}
+  }else{
+    if(length(unique(na.omit(mydata[,fixedTerm]))) <= 1){stop("Only one year of data. Realized genetic gain analysis cannot proceed.Maybe you have not mapped the 'yearOfOrigin' column in the Data Retrieval tad under the 'Pedigree' section. ", call. = FALSE)}
+  }
   # remove traits that are not actually present in the dataset
   traitToRemove <- character()
   for(k in 1:length(trait)){
@@ -92,7 +90,7 @@ rgg <- function(
         ranres <- "~units"#"~dsum(~units | environment)"
         mydataSub=mydataSub[with(mydataSub, order(environment)), ]
         mydataSub$w <- 1/(mydataSub$stdError)
-
+        # remove extreme outliers or influential points
         hh<-split(mydataSub,mydataSub[,fixedTerm])
         hh <- lapply(hh,function(x){
           outlier <- boxplot.stats(x=x[, "predictedValue"],coef=1.5 )$out
@@ -126,6 +124,7 @@ rgg <- function(
           inter <- median(p4, na.rm=TRUE); seb1 <- median(p5, na.rm=TRUE); seb0<- median(p6, na.rm=TRUE)
           r2 <- median(p7, na.rm=TRUE); pv <- median(p8, na.rm=TRUE)
         }else{
+          mydataSub <- do.call(rbind, hh)
           mix <- lm(as.formula(fix), data=mydataSub)
           sm <- summary(mix)
           gg <- sm$coefficients[2,1]*ifelse(deregress,deregressWeight,1)
@@ -153,6 +152,10 @@ rgg <- function(
         currentModeling <- data.frame(module="rgg", analysisId=rggAnalysisId,trait=iTrait, environment="across",
                                       parameter=c("deregression","partitionedModel"), value=c(deregress, partition))
         phenoDTfile$modeling <- rbind(phenoDTfile$modeling,currentModeling[,colnames(phenoDTfile$modeling)] )
+        myPreds <- mydataSub[,colnames(phenoDTfile$predictions)]
+        myPreds$module <- "rgg"
+        myPreds$analysisId <- rggAnalysisId
+        phenoDTfile$predictions <- rbind(phenoDTfile$predictions, myPreds)
         counter=counter+1
       }
     }

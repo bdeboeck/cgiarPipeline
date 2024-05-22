@@ -29,7 +29,15 @@ ocs <- function(
   if(!is.null(entryType)){
     mydata <- mydata[which(mydata$entryType %in% entryType),]
   }
-  otherTraits <- setdiff(unique(mydata$trait), trait)
+  
+  if( phenoDTfile$status[phenoDTfile$status$analysisId == analysisId,"module"] == "indexD"){
+    otherTraits <- setdiff( unique(phenoDTfile$modeling[phenoDTfile$modeling$analysisId == analysisId, "trait"]), "inputObject")
+    analysisIdOtherTraits <- phenoDTfile$modeling[phenoDTfile$modeling$analysisId == analysisId & phenoDTfile$modeling$trait == "inputObject", "value"]
+  }else{
+    otherTraits <- setdiff(unique(mydata$trait), trait)
+    analysisIdOtherTraits <- analysisId
+  }
+  
   if(relDTfile %in% c("both","nrm")){ # we need to calculate NRM
     if(length(intersect(paramsPed$value, colnames(phenoDTfile$data$pedigree)))  < 3){
       stop("Metadata for pedigree (mapping) and pedigree frame do not match. Please reupload and map your pedigree information.", call. = FALSE)
@@ -43,7 +51,7 @@ ocs <- function(
   }
   if(relDTfile %in% c("grm","both")){ # we need to calculate GRM
     M <- phenoDTfile$data$geno
-    if(is.null(M)){stop("Markers are not available for this dataset. Please upload them.", call. = FALSE)}
+    if(is.null(M)){stop("Markers are not available for this dataset. OCS requires pedigree or markers to work. Please upload any of these in the data retrieval tabs.", call. = FALSE)}
     if(ncol(M) > 5000){ # we remove that many markers if a big snp chip
       A <- sommer::A.mat(M[,sample(1:ncol(M), 5000)])
     }else{ A <- sommer::A.mat(M) };  M <- NULL
@@ -125,7 +133,7 @@ ocs <- function(
       for(iTrait in otherTraits){ # iTrait <- otherTraits[1]
         
         provPredictions <- phenoDTfile$predictions
-        provPredictions <- provPredictions[which(provPredictions$analysisId %in% analysisId),]
+        provPredictions <- provPredictions[which(provPredictions$analysisId %in% analysisIdOtherTraits),]
         if(!is.null(entryType)){
           provPredictions <- provPredictions[which(provPredictions$entryType %in% entryType),]
         }
@@ -153,7 +161,7 @@ ocs <- function(
   
   #########################################
   ## update structure
-  setdiff(colnames(predictionsBind), colnames(phenoDTfile$predictions))
+  # setdiff(colnames(predictionsBind), colnames(phenoDTfile$predictions))
   phenoDTfile$predictions <- rbind(predictionsBind, phenoDTfile$predictions[, colnames(phenoDTfile$predictions)])
   phenoDTfile$status <- rbind(phenoDTfile$status, data.frame(module="ocs", analysisId=ocsAnalysisId))
   ## add which data was used as input
